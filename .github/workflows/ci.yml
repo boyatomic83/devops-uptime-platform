@@ -1,0 +1,131 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/uptime-monitor
+
+jobs:
+  test:
+    name: Lint & test
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: app } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        with: { name: coverage, path: app/coverage }
+
+  helm:
+    name: Helm lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/uptime-monitor
+      - run: helm template test deploy/helm/uptime-monitor --set ingress.enabled=true --set serviceMonitor.enabled=true > /dev/null
+
+  image:
+    name: Build, scan & push image
+    needs: [test, helm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build image (load locally for scanning)
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          load: true
+          tags: uptime-monitor:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: uptime-monitor:scan
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with: { sarif_file: trivy.sarif }
+      - name: Fail on critical vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: uptime-monitor:scan
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+  e2e:
+    name: Deploy to kind & smoke test
+    needs: [test, helm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with: { cluster_name: ci }
+      - name: Build and load image into kind
+        run: |
+          docker build -t uptime-monitor:e2e app
+          kind load docker-image uptime-monitor:e2e --name ci
+      - name: Helm install
+        run: |
+          helm install uptime deploy/helm/uptime-monitor \
+            --namespace uptime --create-namespace \
+            --set image.repository=uptime-monitor --set image.tag=e2e --set image.pullPolicy=Never \
+            --set config.monitors="self=http://127.0.0.1:3000/healthz" \
+            --wait --timeout 120s
+      - name: Smoke test
+        run: |
+          kubectl -n uptime port-forward svc/uptime-uptime-monitor 8080:80 &
+          sleep 5
+          curl -fsS localhost:8080/healthz
+          curl -fsS localhost:8080/api/monitors | jq .
+          curl -fsS localhost:8080/metrics | grep uptime_monitor_up
+      - name: Debug on failure
+        if: failure()
+        run: kubectl -n uptime get all && kubectl -n uptime describe pods && kubectl -n uptime logs -l app.kubernetes.io/name=uptime-monitor

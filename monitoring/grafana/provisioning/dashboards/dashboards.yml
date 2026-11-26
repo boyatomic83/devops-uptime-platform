@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: default
+    folder: Uptime
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

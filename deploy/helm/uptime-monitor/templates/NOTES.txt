@@ -1,0 +1,4 @@
+Uptime monitor deployed.
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "uptime.fullname" . }} 8080:{{ .Values.service.port }}
+  open http://localhost:8080

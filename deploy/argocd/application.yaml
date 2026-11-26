@@ -1,0 +1,20 @@
+# Argo CD GitOps: syncs the Helm chart from this repo into the cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: uptime-monitor
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/boyatomic83/devops-uptime-platform.git
+    targetRevision: main
+    path: deploy/helm/uptime-monitor
+    helm:
+      valueFiles: [values.yaml]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: uptime
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

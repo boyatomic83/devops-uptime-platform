@@ -1,0 +1,22 @@
+groups:
+  - name: uptime
+    rules:
+      - alert: TargetDown
+        expr: uptime_monitor_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.monitor }} is down"
+          description: "{{ $labels.url }} has failed checks for over 1 minute."
+      - alert: TargetSlow
+        expr: histogram_quantile(0.95, sum by (le, monitor) (rate(uptime_check_duration_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.monitor }} p95 latency > 2s"
+      - alert: UptimeMonitorAppDown
+        expr: up{job="uptime-monitor"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "The uptime-monitor service itself is not being scraped"

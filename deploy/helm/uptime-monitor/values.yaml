@@ -1,0 +1,51 @@
+replicaCount: 1  # monitors are kept in memory; scale >1 only with an external store
+
+image:
+  repository: ghcr.io/boyatomic83/uptime-monitor
+  tag: latest
+  pullPolicy: IfNotPresent
+
+config:
+  logLevel: info
+  defaultIntervalSec: 30
+  checkTimeoutMs: 5000
+  monitors: "google=https://www.google.com,github=https://github.com"
+
+# Name of an existing Secret with key ALERT_WEBHOOK_URL (optional)
+alertWebhookSecret: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: nginx
+  host: uptime.local
+  tls: []
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { cpu: 250m, memory: 192Mi }
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile: { type: RuntimeDefault }
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: ["ALL"] }
+
+serviceMonitor:
+  enabled: false   # requires prometheus-operator CRDs
+  interval: 15s
+
+networkPolicy:
+  enabled: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

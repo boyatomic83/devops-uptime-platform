@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Uptime Monitor</title>
+  <style>
+    :root { --bg:#f7f7f8; --card:#fff; --fg:#1b1b1f; --muted:#6b6b76; --up:#1f9d55; --down:#d64545; --pending:#b08900; --border:#e3e3e8; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#111114; --card:#1b1b20; --fg:#ececf1; --muted:#9a9aa6; --border:#2c2c34; } }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+    main { max-width:900px; margin:0 auto; padding:24px 16px; }
+    h1 { margin:0 0 4px; font-size:24px; }
+    p.sub { margin:0 0 24px; color:var(--muted); }
+    form { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:24px; }
+    input, button { font:inherit; padding:8px 10px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--fg); }
+    input { flex:1 1 180px; }
+    button { cursor:pointer; }
+    button.primary { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px 16px; margin-bottom:10px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .dot { width:12px; height:12px; border-radius:50%; flex:none; }
+    .up { background:var(--up); } .down { background:var(--down); } .pending { background:var(--pending); }
+    .info { flex:1 1 240px; min-width:0; }
+    .info a { color:var(--muted); word-break:break-all; font-size:13px; }
+    .stats { color:var(--muted); font-size:13px; text-align:right; }
+    .bars { display:flex; gap:2px; height:22px; align-items:flex-end; width:100%; }
+    .bars span { flex:1; border-radius:2px; height:100%; opacity:.85; }
+    .empty { color:var(--muted); text-align:center; padding:40px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Uptime Monitor</h1>
+  <p class="sub">Live status of monitored endpoints · <a href="/metrics">/metrics</a></p>
+  <form id="add">
+    <input name="name" placeholder="Name" required>
+    <input name="url" type="url" placeholder="https://example.com" required>
+    <input name="intervalSec" type="number" min="5" max="3600" placeholder="Interval (s)" style="flex:0 1 120px">
+    <button class="primary">Add monitor</button>
+  </form>
+  <div id="list"></div>
+</main>
+<script>
+const list = document.getElementById('list');
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function load() {
+  const res = await fetch('/api/monitors');
+  const monitors = await res.json();
+  if (!monitors.length) { list.innerHTML = '<div class="empty">No monitors yet. Add one above.</div>'; return; }
+  list.innerHTML = monitors.map((m) => `
+    <div class="card">
+      <span class="dot ${m.status}"></span>
+      <div class="info"><strong>${esc(m.name)}</strong><br><a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.url)}</a></div>
+      <div class="stats">${m.status.toUpperCase()}${m.lastLatencyMs != null ? ` · ${m.lastLatencyMs} ms` : ''}<br>
+        ${m.uptimePercent != null ? m.uptimePercent + '% uptime' : '—'}</div>
+      <button data-del="${m.id}" aria-label="Delete ${esc(m.name)}">✕</button>
+      <div class="bars">${m.recentChecks.map((c) => `<span class="${c.up ? 'up' : 'down'}" title="${esc(c.at)}"></span>`).join('')}</div>
+    </div>`).join('');
+}
+
+document.getElementById('add').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target));
+  if (!data.intervalSec) delete data.intervalSec; else data.intervalSec = Number(data.intervalSec);
+  const res = await fetch('/api/monitors', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
+  if (!res.ok) { alert((await res.json()).errors.join('\n')); return; }
+  e.target.reset();
+  setTimeout(load, 500);
+});
+
+list.addEventListener('click', async (e) => {
+  const id = e.target.dataset.del;
+  if (!id) return;
+  await fetch('/api/monitors/' + id, { method: 'DELETE' });
+  load();
+});
+
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>
