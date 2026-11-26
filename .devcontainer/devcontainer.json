@@ -7,11 +7,12 @@
     "ghcr.io/devcontainers-extra/features/kind:1": {}
   },
   "hostRequirements": { "cpus": 4, "memory": "8gb" },
-  "forwardPorts": [3000, 3001, 9090],
+  "forwardPorts": [3000, 3001, 9090, 9093],
   "portsAttributes": {
     "3000": { "label": "Uptime app", "onAutoForward": "openBrowser" },
     "3001": { "label": "Grafana" },
-    "9090": { "label": "Prometheus" }
+    "9090": { "label": "Prometheus" },
+    "9093": { "label": "Alertmanager" }
   },
   "postCreateCommand": "cd app && npm ci",
   "customizations": {

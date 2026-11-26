@@ -1,4 +1,4 @@
-.PHONY: install dev test lint build up down logs kind-up kind-deploy kind-down
+.PHONY: install dev test lint build up down logs reload kind-up kind-deploy kind-down help
 
 CLUSTER ?= uptime
 IMAGE   ?= uptime-monitor:local
@@ -17,15 +17,21 @@ build:        ## Build the Docker image
 
 up:           ## Start app + Prometheus + Grafana
 	docker compose up -d --build
-	@echo "App:        http://localhost:3000"
-	@echo "Prometheus: http://localhost:9090"
-	@echo "Grafana:    http://localhost:3001 (admin/admin)"
+	@echo "App:          http://localhost:3000"
+	@echo "Prometheus:   http://localhost:9090"
+	@echo "Grafana:      http://localhost:3001 (admin/admin)"
+	@echo "Alertmanager: http://localhost:9093"
+	@echo "Loki:         http://localhost:3100 (query it from Grafana > Explore)"
+	@echo "Alloy:        http://localhost:12345"
 
 down:         ## Stop the compose stack
 	docker compose down
 
 logs:
 	docker compose logs -f app
+
+reload:       ## Reload Prometheus + Alertmanager config without restarting
+	curl -fsS -X POST localhost:9090/-/reload && curl -fsS -X POST localhost:9093/-/reload && echo reloaded
 
 kind-up:      ## Create a local Kubernetes cluster
 	kind create cluster --name $(CLUSTER)
