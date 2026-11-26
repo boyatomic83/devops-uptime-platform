@@ -2,33 +2,42 @@
 # Signing happens keylessly in .github/workflows/ci.yml (Cosign + GitHub OIDC);
 # Kyverno checks the Sigstore certificate identity at admission time and
 # pins the pod to the verified digest.
-apiVersion: kyverno.io/v1
-kind: ClusterPolicy
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
 metadata:
   name: verify-uptime-image-signature
   annotations:
     policies.kyverno.io/title: Verify uptime-monitor image signature
     policies.kyverno.io/severity: high
 spec:
-  validationFailureAction: Enforce
-  background: false
-  webhookTimeoutSeconds: 30
-  rules:
-    - name: require-keyless-signature-from-ci
-      match:
-        any:
-          - resources:
-              kinds: [Pod]
-      verifyImages:
-        - imageReferences:
-            - "ghcr.io/boyatomic83/uptime-monitor*"
-          mutateDigest: true
-          verifyDigest: true
-          required: true
-          attestors:
-            - entries:
-                - keyless:
-                    subject: "https://github.com/boyatomic83/devops-uptime-platform/.github/workflows/ci.yml@refs/heads/main"
-                    issuer: "https://token.actions.githubusercontent.com"
-                    rekor:
-                      url: https://rekor.sigstore.dev
+  validationActions: [Deny]
+  webhookConfiguration:
+    timeoutSeconds: 30
+  evaluation:
+    background:
+      enabled: false
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ['']
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  matchImageReferences:
+    - glob: 'ghcr.io/boyatomic83/uptime-monitor*'
+  validationConfigurations:
+    mutateDigest: true
+    verifyDigest: true
+    required: true
+  attestors:
+    - name: ci
+      cosign:
+        keyless:
+          identities:
+            - issuer: https://token.actions.githubusercontent.com
+              subject: https://github.com/boyatomic83/devops-uptime-platform/.github/workflows/ci.yml@refs/heads/main
+        ctlog:
+          url: https://rekor.sigstore.dev
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.ci])).all(e, e > 0)
+      message: image must be signed by this repository's CI workflow

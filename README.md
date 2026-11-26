@@ -72,7 +72,7 @@ cosign verify ghcr.io/boyatomic83/uptime-monitor:latest \
 docker buildx imagetools inspect ghcr.io/boyatomic83/uptime-monitor:latest --format '{{ json .SBOM }}' | head
 ```
 
-Admission policies (needs Kyverno installed): `kubectl apply -f deploy/policies/`
+Admission policies (Kyverno ≥ 1.20 CEL policies: `ImageValidatingPolicy` + `ValidatingPolicy`): `kubectl apply -f deploy/policies/`
 
 ### Cloud: AWS EKS with Terraform
 

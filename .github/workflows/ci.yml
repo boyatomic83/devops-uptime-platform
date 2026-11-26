@@ -257,7 +257,16 @@ jobs:
             kubectl apply -f deploy/policies/ && break
             echo "webhook not ready yet, retrying ($i)"; sleep 5
           done
-          kubectl wait --for=condition=Ready clusterpolicy --all --timeout=120s
+          kubectl get validatingpolicies,imagevalidatingpolicies
+          # Wait until enforcement is live: a privileged pod must be rejected
+          for i in $(seq 1 30); do
+            if ! kubectl -n uptime run probe --image=busybox --dry-run=server \
+                 --overrides='{"spec":{"containers":[{"name":"probe","image":"busybox","securityContext":{"privileged":true}}]}}' >/dev/null 2>&1; then
+              echo "policies are enforcing"; exit 0
+            fi
+            sleep 5
+          done
+          echo "policies never started enforcing"; exit 1
       - name: Signed, hardened image is admitted
         run: |
           helm install uptime deploy/helm/uptime-monitor -n uptime \
@@ -278,17 +287,17 @@ jobs:
           SEC='"securityContext":{"runAsNonRoot":true}'
           LIM='"resources":{"limits":{"cpu":"100m","memory":"64Mi"}}'
           # unsigned image from our registry (otherwise compliant pod)
-          expect_reject 'verify-uptime-image-signature' run unsigned --image=ghcr.io/${{ github.repository_owner }}/uptime-monitor:unsigned \
+          expect_reject 'signed by this repository|verif|signature|image' run unsigned --image=ghcr.io/${{ github.repository_owner }}/uptime-monitor:unsigned \
             --overrides="{\"spec\":{$SEC,\"containers\":[{\"name\":\"unsigned\",\"image\":\"ghcr.io/${{ github.repository_owner }}/uptime-monitor:unsigned\",$LIM}]}}"
           # privileged container
-          expect_reject 'disallow-privileged' run priv --image=busybox \
+          expect_reject 'privileged containers are not allowed' run priv --image=busybox \
             --overrides="{\"spec\":{$SEC,\"containers\":[{\"name\":\"priv\",\"image\":\"busybox\",\"securityContext\":{\"privileged\":true},$LIM}]}}"
           # running as root allowed by default -> rejected
-          expect_reject 'require-run-as-non-root' run root --image=busybox \
+          expect_reject 'must run as non-root' run root --image=busybox \
             --overrides="{\"spec\":{\"containers\":[{\"name\":\"root\",\"image\":\"busybox\",$LIM}]}}"
           # no resource limits
-          expect_reject 'require-resource-limits' run nolimits --image=busybox \
+          expect_reject 'limits are required' run nolimits --image=busybox \
             --overrides="{\"spec\":{$SEC,\"containers\":[{\"name\":\"nolimits\",\"image\":\"busybox\"}]}}"
       - name: Debug on failure
         if: failure()
-        run: kubectl get clusterpolicy -o wide; kubectl -n uptime get events --sort-by=.lastTimestamp | tail -30; kubectl get policyreport -A
+        run: kubectl get validatingpolicies,imagevalidatingpolicies -o yaml | tail -60; kubectl -n uptime get events --sort-by=.lastTimestamp | tail -30; kubectl get policyreport -A

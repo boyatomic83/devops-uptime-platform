@@ -1,60 +1,36 @@
 # Baseline hardening for the uptime namespace: no privileged containers,
 # must run as non-root, and must declare CPU/memory limits.
-apiVersion: kyverno.io/v1
-kind: ClusterPolicy
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
 metadata:
   name: uptime-pod-security
   annotations:
     policies.kyverno.io/title: Pod hardening for the uptime namespace
     policies.kyverno.io/severity: medium
 spec:
-  validationFailureAction: Enforce
-  background: true
-  rules:
-    - name: disallow-privileged
-      match:
-        any:
-          - resources:
-              kinds: [Pod]
-              namespaces: [uptime]
-      validate:
-        message: "Privileged containers are not allowed."
-        pattern:
-          spec:
-            =(initContainers):
-              - =(securityContext):
-                  =(privileged): "false"
-            containers:
-              - =(securityContext):
-                  =(privileged): "false"
-    - name: require-run-as-non-root
-      match:
-        any:
-          - resources:
-              kinds: [Pod]
-              namespaces: [uptime]
-      validate:
-        message: "Pods must set securityContext.runAsNonRoot=true."
-        anyPattern:
-          - spec:
-              securityContext:
-                runAsNonRoot: true
-          - spec:
-              containers:
-                - securityContext:
-                    runAsNonRoot: true
-    - name: require-resource-limits
-      match:
-        any:
-          - resources:
-              kinds: [Pod]
-              namespaces: [uptime]
-      validate:
-        message: "CPU and memory limits are required."
-        pattern:
-          spec:
-            containers:
-              - resources:
-                  limits:
-                    cpu: "?*"
-                    memory: "?*"
+  validationActions: [Deny]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: uptime
+    resourceRules:
+      - apiGroups: ['']
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  variables:
+    - name: allContainers
+      expression: >-
+        object.spec.containers + object.spec.?initContainers.orValue([])
+  validations:
+    - message: privileged containers are not allowed
+      expression: >-
+        variables.allContainers.all(c, c.?securityContext.?privileged.orValue(false) == false)
+    - message: pods must run as non-root (securityContext.runAsNonRoot=true)
+      expression: >-
+        object.spec.?securityContext.?runAsNonRoot.orValue(false) == true ||
+        object.spec.containers.all(c, c.?securityContext.?runAsNonRoot.orValue(false) == true)
+    - message: CPU and memory limits are required on every container
+      expression: >-
+        object.spec.containers.all(c,
+          c.?resources.?limits.?cpu.hasValue() && c.?resources.?limits.?memory.hasValue())
