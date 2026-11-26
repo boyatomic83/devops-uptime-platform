@@ -252,7 +252,11 @@ jobs:
       - name: Apply policies
         run: |
           kubectl create namespace uptime
-          kubectl apply -f deploy/policies/
+          # Helm --wait returns before Kyverno's webhook endpoint accepts connections; retry
+          for i in $(seq 1 30); do
+            kubectl apply -f deploy/policies/ && break
+            echo "webhook not ready yet, retrying ($i)"; sleep 5
+          done
           kubectl wait --for=condition=Ready clusterpolicy --all --timeout=120s
       - name: Signed, hardened image is admitted
         run: |
