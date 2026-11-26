@@ -40,7 +40,13 @@ A self-hosted **uptime monitor** built with **Express**, packaged with a full De
 make up        # app + Prometheus + Grafana
 ```
 
-Open the forwarded ports: **3000** (status page), **9090** (Prometheus), **3001** (Grafana, `admin`/`admin`).
+Open the forwarded ports from the **PORTS** tab:
+
+| Port | What to look at |
+|---|---|
+| **3000** | Status page: add a URL and watch it get checked |
+| **3001** | Grafana: opens straight on the **Uptime Overview** dashboard (login `admin`/`admin` to edit) |
+| **9090** | Prometheus: try the query `uptime_monitor_up`, or see **Status → Targets** and **Alerts** |
 
 ### Run on Kubernetes (kind inside the Codespace)
 
