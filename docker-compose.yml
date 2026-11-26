@@ -9,7 +9,13 @@ services:
       LOG_LEVEL: info
       DEFAULT_INTERVAL_SEC: "15"
       MONITORS: "google=https://www.google.com,github=https://github.com,broken=https://httpstat.us/503"
+      # Notification channels: set these in a .env file next to this one (see .env.example)
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      WHATSAPP_PHONE: ${WHATSAPP_PHONE:-}
+      WHATSAPP_CALLMEBOT_APIKEY: ${WHATSAPP_CALLMEBOT_APIKEY:-}
+      ALERTMANAGER_WEBHOOK_TOKEN: ${ALERTMANAGER_WEBHOOK_TOKEN:-local-dev-token}
       DATABASE_URL: postgres://uptime:uptime@postgres:5432/uptime
     depends_on:
       postgres: { condition: service_healthy }
@@ -42,7 +48,9 @@ services:
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
-    command: [--config.file=/etc/alertmanager/alertmanager.yml]
+    environment:
+      ALERTMANAGER_WEBHOOK_TOKEN: ${ALERTMANAGER_WEBHOOK_TOKEN:-local-dev-token}
+    entrypoint: [/etc/alertmanager/entrypoint.sh]
     volumes:
       - ./monitoring/alertmanager:/etc/alertmanager:ro
     ports: ["9093:9093"]

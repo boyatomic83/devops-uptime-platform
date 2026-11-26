@@ -24,6 +24,12 @@ function loadConfig(env = process.env) {
     defaultIntervalSec: Number(env.DEFAULT_INTERVAL_SEC || 30),
     timeoutMs: Number(env.CHECK_TIMEOUT_MS || 5000),
     alertWebhookUrl: env.ALERT_WEBHOOK_URL || '',
+    telegramBotToken: env.TELEGRAM_BOT_TOKEN || '',
+    telegramChatId: env.TELEGRAM_CHAT_ID || '',
+    whatsappPhone: env.WHATSAPP_PHONE || '',
+    whatsappApiKey: env.WHATSAPP_CALLMEBOT_APIKEY || '',
+    // Shared secret Alertmanager must send to POST /api/alerts/alertmanager
+    alertmanagerToken: env.ALERTMANAGER_WEBHOOK_TOKEN || '',
     monitors: parseMonitors(env.MONITORS),
     logLevel: env.LOG_LEVEL || 'info',
     databaseUrl: env.DATABASE_URL || '',

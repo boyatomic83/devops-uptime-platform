@@ -1,7 +1,9 @@
 'use strict';
 
 const path = require('node:path');
+const crypto = require('node:crypto');
 const express = require('express');
+const { formatAlertmanager } = require('./notifiers');
 
 function validateMonitor(body) {
   const errors = [];
@@ -23,10 +25,22 @@ function validateMonitor(body) {
 // Express 4 does not forward rejected promises to the error handler
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-function createApp({ store, scheduler, metrics, logger, isReady = () => true, whoami = () => ({}) }) {
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+
+function createApp({
+  store, scheduler, metrics, logger,
+  isReady = () => true, whoami = () => ({}),
+  notifier = { channels: [], notify: async () => ({}) }, alertmanagerToken = '',
+}) {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '10kb' }));
+  const smallJson = express.json({ limit: '10kb' });
+  const largeJson = express.json({ limit: '256kb' }); // Alertmanager batches can be big
+  app.use((req, res, next) => (req.path === '/api/alerts/alertmanager' ? largeJson : smallJson)(req, res, next));
 
   app.use((req, res, next) => {
     const end = metrics.httpRequests.startTimer();
@@ -86,6 +100,26 @@ function createApp({ store, scheduler, metrics, logger, isReady = () => true, wh
     if (!(await store.remove(req.params.id))) return res.status(404).json({ error: 'monitor not found' });
     scheduler.stop(req.params.id);
     res.status(204).end();
+  }));
+
+  // Which notification channels are configured (names only, never secrets)
+  app.get('/api/notifications', (_req, res) => res.json({ channels: notifier.channels }));
+
+  // Send a test message to every configured channel
+  app.post('/api/notifications/test', wrap(async (_req, res) => {
+    if (!notifier.channels.length) return res.status(400).json({ error: 'no notification channels configured' });
+    res.json({ results: await notifier.notify('🔔 Test notification from uptime-monitor. Alerts will arrive here.') });
+  }));
+
+  // Alertmanager webhook receiver: forwards Prometheus alerts to the same channels
+  app.post('/api/alerts/alertmanager', wrap(async (req, res) => {
+    if (!alertmanagerToken) return res.status(404).json({ error: 'alertmanager receiver disabled' });
+    const auth = req.get('authorization') || '';
+    if (!safeEqual(auth, `Bearer ${alertmanagerToken}`)) return res.status(401).json({ error: 'unauthorized' });
+    if (!Array.isArray(req.body?.alerts)) return res.status(400).json({ errors: ['invalid alertmanager payload'] });
+    const results = await notifier.notify(formatAlertmanager(req.body));
+    logger?.info('forwarded alertmanager notification', { alerts: req.body.alerts.length, results });
+    res.json({ results });
   }));
 
   // eslint-disable-next-line no-unused-vars

@@ -41,7 +41,7 @@ Open the forwarded ports from the **PORTS** tab:
 
 Logs: in Grafana open **Explore → Loki** and run `{service="app"} | json`.
 
-To get alert notifications, add a Discord/Slack receiver in `monitoring/alertmanager/alertmanager.yml` and run `make reload`.
+To get alerts on your phone, see [Notifications](#notifications-telegram-whatsapp-slackdiscord).
 
 ### Run on Kubernetes (kind inside the Codespace)
 
@@ -87,6 +87,32 @@ kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/st
 kubectl apply -f deploy/argocd/application.yaml
 ```
 
+## Notifications: Telegram, WhatsApp, Slack/Discord
+
+Two kinds of alerts are sent to **every channel you configure**:
+- **Instant:** the app notices a monitor flip UP ↔ DOWN.
+- **Prometheus alerts** (`TargetDown`, `TargetSlow`, …) → Alertmanager → app → your channels.
+
+```bash
+cp .env.example .env      # .env is git-ignored: never commit tokens
+```
+
+**Telegram (recommended, free)**
+1. In Telegram, message **@BotFather** → `/newbot` → copy the token into `TELEGRAM_BOT_TOKEN`.
+2. Open your new bot and send it any message (e.g. `hi`).
+3. Run `make telegram-chat-id` and copy the number into `TELEGRAM_CHAT_ID`.
+
+**WhatsApp (via CallMeBot, free for personal use)**
+Follow [CallMeBot's WhatsApp setup](https://www.callmebot.com/blog/free-api-whatsapp-messages/) to get an API key for your own number, then set `WHATSAPP_PHONE` (e.g. `+919876543210`) and `WHATSAPP_CALLMEBOT_APIKEY`. It is a third-party service: messages pass through their servers. For production, use the official WhatsApp Business Cloud API or Twilio.
+
+Apply and test:
+```bash
+docker compose up -d      # recreates the app with the new settings
+make test-alert           # sends "🔔 Test notification" to every channel
+```
+
+On Kubernetes: `kubectl -n uptime create secret generic uptime-notify --from-env-file=.env` and set `alertWebhookSecret=uptime-notify` in the Helm values.
+
 ## Configuration
 
 | Env var | Default | Description |
@@ -96,6 +122,9 @@ kubectl apply -f deploy/argocd/application.yaml
 | `DEFAULT_INTERVAL_SEC` | `30` | Check interval |
 | `CHECK_TIMEOUT_MS` | `5000` | Per-check timeout |
 | `ALERT_WEBHOOK_URL` | – | Slack/Discord incoming webhook |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | – | Telegram bot notifications |
+| `WHATSAPP_PHONE`, `WHATSAPP_CALLMEBOT_APIKEY` | – | WhatsApp notifications via CallMeBot |
+| `ALERTMANAGER_WEBHOOK_TOKEN` | – | Shared secret Alertmanager uses to call `/api/alerts/alertmanager` (receiver disabled when unset) |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
 | `DATABASE_URL` | – | Postgres connection string; without it monitors are kept in memory (single replica only) |
 | `SYNC_INTERVAL_SEC` | `10` | How often the leader re-reads monitors created via other replicas |
@@ -106,6 +135,9 @@ kubectl apply -f deploy/argocd/application.yaml
 |---|---|---|
 | `GET` | `/healthz`, `/readyz` | Liveness / readiness (readiness also checks the database) |
 | `GET` | `/api/whoami` | Which pod answered and whether it is the leader |
+| `GET` | `/api/notifications` | Names of configured notification channels |
+| `POST` | `/api/notifications/test` | Send a test message to every channel |
+| `POST` | `/api/alerts/alertmanager` | Alertmanager webhook receiver (Bearer token required) |
 | `GET` | `/metrics` | Prometheus metrics |
 | `GET` | `/api/monitors` | List monitors |
 | `POST` | `/api/monitors` | Create `{ "name", "url", "intervalSec"? }` |

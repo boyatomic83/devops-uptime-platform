@@ -8,6 +8,7 @@ const { MemoryStore } = require('./store-memory');
 const { PostgresStore } = require('./store-postgres');
 const { Scheduler } = require('./scheduler');
 const { createAlerter } = require('./alerter');
+const { createNotifier } = require('./notifiers');
 const { createLeaderElector } = require('./leader');
 const { createApp } = require('./app');
 
@@ -29,7 +30,9 @@ async function main() {
     logger.info('seeded monitor', { name: m.name, url: m.url });
   }
 
-  const alert = createAlerter({ webhookUrl: config.alertWebhookUrl, logger });
+  const notifier = createNotifier({ config, logger });
+  logger.info('notification channels', { channels: notifier.channels });
+  const alert = createAlerter({ notifier, logger });
   const scheduler = new Scheduler({
     store, metrics, alert, logger,
     timeoutMs: config.timeoutMs,
@@ -55,6 +58,8 @@ async function main() {
     store, scheduler, metrics, logger,
     isReady: () => ready && !shuttingDown,
     whoami: () => ({ pod: os.hostname(), leader: leader.isLeader() }),
+    notifier,
+    alertmanagerToken: config.alertmanagerToken,
   });
 
   const server = app.listen(config.port, () => {

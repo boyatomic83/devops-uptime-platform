@@ -1,26 +1,25 @@
 # Routes alerts fired by Prometheus (monitoring/prometheus/alerts.yml).
-# By default alerts are only visible in the Alertmanager UI (http://localhost:9093).
-# To get notifications, uncomment a receiver below and point `route.receiver` at it.
+#
+# Default: everything goes to the uptime-monitor app, which forwards it to
+# whichever channels you configured in .env (Telegram, WhatsApp, Slack/Discord).
+# See README "Notifications". The token placeholder below is substituted at
+# container start (see docker-compose.yml); never put real secrets in this file.
 route:
-  receiver: "null"
+  receiver: app
   group_by: [alertname, monitor]
   group_wait: 10s
   group_interval: 1m
   repeat_interval: 4h
-  routes:
-    - matchers: [severity="critical"]
-      receiver: "null"   # e.g. change to "discord" or "slack"
 
 receivers:
-  - name: "null"
-  # - name: discord
-  #   discord_configs:
-  #     - webhook_url: https://discord.com/api/webhooks/XXX/YYY
-  # - name: slack
-  #   slack_configs:
-  #     - api_url: https://hooks.slack.com/services/XXX/YYY/ZZZ
-  #       channel: "#alerts"
-  #       send_resolved: true
+  - name: app
+    webhook_configs:
+      - url: http://app:3000/api/alerts/alertmanager
+        send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials: __ALERTMANAGER_WEBHOOK_TOKEN__
 
 inhibit_rules:
   # If the monitor app itself is down, don't also page for every target

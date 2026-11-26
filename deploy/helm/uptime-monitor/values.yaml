@@ -13,7 +13,10 @@ config:
   checkTimeoutMs: 5000
   monitors: "google=https://www.google.com,github=https://github.com"
 
-# Name of an existing Secret with key ALERT_WEBHOOK_URL (optional)
+# Name of an existing Secret holding notification settings (optional), any of:
+#   ALERT_WEBHOOK_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+#   WHATSAPP_PHONE, WHATSAPP_CALLMEBOT_APIKEY, ALERTMANAGER_WEBHOOK_TOKEN
+# e.g. kubectl -n uptime create secret generic uptime-notify --from-env-file=.env
 alertWebhookSecret: ""
 
 # External Postgres: name of an existing Secret with key DATABASE_URL.

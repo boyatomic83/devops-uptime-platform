@@ -106,6 +106,46 @@ describe('monitors API', () => {
   });
 });
 
+describe('notification endpoints', () => {
+  const notifier = { channels: ['telegram'], notify: jest.fn(async () => ({ telegram: true })) };
+  const build = (token = 'secret') => createApp({
+    store: new MemoryStore(), scheduler: {}, metrics: createMetrics(), logger, notifier, alertmanagerToken: token,
+  });
+  const payload = { status: 'firing', alerts: [{ status: 'firing', labels: { alertname: 'TargetDown' }, annotations: { summary: 'x is down' } }] };
+
+  test('lists channel names', async () => {
+    expect((await request(build()).get('/api/notifications')).body).toEqual({ channels: ['telegram'] });
+  });
+
+  test('test notification', async () => {
+    const res = await request(build()).post('/api/notifications/test');
+    expect(res.body).toEqual({ results: { telegram: true } });
+  });
+
+  test('test notification without channels', async () => {
+    const app = createApp({ store: new MemoryStore(), scheduler: {}, metrics: createMetrics(), logger });
+    expect((await request(app).post('/api/notifications/test')).status).toBe(400);
+  });
+
+  test('alertmanager receiver requires the bearer token', async () => {
+    const app = build();
+    expect((await request(app).post('/api/alerts/alertmanager').send(payload)).status).toBe(401);
+    expect((await request(app).post('/api/alerts/alertmanager').set('authorization', 'Bearer nope').send(payload)).status).toBe(401);
+    const ok = await request(app).post('/api/alerts/alertmanager').set('authorization', 'Bearer secret').send(payload);
+    expect(ok.status).toBe(200);
+    expect(notifier.notify).toHaveBeenLastCalledWith(expect.stringContaining('x is down'));
+  });
+
+  test('alertmanager receiver is disabled without a token', async () => {
+    expect((await request(build('')).post('/api/alerts/alertmanager').send(payload)).status).toBe(404);
+  });
+
+  test('alertmanager receiver validates payload', async () => {
+    const res = await request(build()).post('/api/alerts/alertmanager').set('authorization', 'Bearer secret').send({ foo: 1 });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('scheduler', () => {
   test('alerts when a monitor goes from up to down', async () => {
     const store = new MemoryStore();

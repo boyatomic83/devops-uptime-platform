@@ -1,4 +1,4 @@
-.PHONY: install dev test lint build up down logs reload kind-up kind-deploy kind-down help
+.PHONY: install dev test lint build up down logs reload test-alert telegram-chat-id kind-up kind-deploy kind-down help
 
 CLUSTER ?= uptime
 IMAGE   ?= uptime-monitor:local
@@ -30,8 +30,15 @@ down:         ## Stop the compose stack
 logs:
 	docker compose logs -f app
 
-reload:       ## Reload Prometheus + Alertmanager config without restarting
-	curl -fsS -X POST localhost:9090/-/reload && curl -fsS -X POST localhost:9093/-/reload && echo reloaded
+reload:       ## Reload Prometheus config without restarting
+	curl -fsS -X POST localhost:9090/-/reload && echo reloaded
+
+test-alert:   ## Send a test message to every configured notification channel
+	@curl -sS localhost:3000/api/notifications; echo
+	@curl -sS -X POST localhost:3000/api/notifications/test; echo
+
+telegram-chat-id: ## Print your Telegram chat id (message your bot first)
+	@./scripts/telegram-chat-id.sh
 
 kind-up:      ## Create a local Kubernetes cluster
 	kind create cluster --name $(CLUSTER)

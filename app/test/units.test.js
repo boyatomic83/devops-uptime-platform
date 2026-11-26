@@ -3,6 +3,7 @@
 const { parseMonitors, loadConfig } = require('../src/config');
 const { checkUrl } = require('../src/checker');
 const { createAlerter } = require('../src/alerter');
+const { createNotifier, formatAlertmanager } = require('../src/notifiers');
 
 const logger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -38,18 +39,82 @@ describe('checkUrl', () => {
 
 describe('alerter', () => {
   const monitor = { name: 'svc', url: 'http://svc', status: 'down', lastError: 'boom' };
-  test('posts to webhook', async () => {
-    const fetchImpl = jest.fn(async () => ({ ok: true }));
-    const alert = createAlerter({ webhookUrl: 'http://hook', logger, fetchImpl });
-    expect(await alert(monitor, 'up')).toBe(true);
-    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.text).toContain('svc* is DOWN');
+  test('builds message and notifies', async () => {
+    const notify = jest.fn(async () => ({ telegram: true }));
+    const alert = createAlerter({ notifier: { notify }, logger });
+    expect(await alert(monitor, 'up')).toEqual({ telegram: true });
+    expect(notify.mock.calls[0][0]).toContain('svc is DOWN (was up)');
+    expect(notify.mock.calls[0][0]).toContain('Error: boom');
   });
-  test('no webhook configured', async () => {
-    expect(await createAlerter({ webhookUrl: '', logger })(monitor, 'up')).toBe(false);
+});
+
+describe('notifiers', () => {
+  const ok = () => jest.fn(async () => ({ ok: true, status: 200 }));
+
+  test('no channels configured', async () => {
+    const n = createNotifier({ config: {}, logger });
+    expect(n.channels).toEqual([]);
+    expect(await n.notify('hi')).toEqual({});
   });
-  test('webhook failure is handled', async () => {
-    const alert = createAlerter({ webhookUrl: 'http://hook', logger, fetchImpl: async () => { throw new Error('x'); } });
-    expect(await alert(monitor, 'up')).toBe(false);
+
+  test('telegram', async () => {
+    const fetchImpl = ok();
+    const n = createNotifier({ config: { telegramBotToken: 'T0K', telegramChatId: '42' }, logger, fetchImpl });
+    expect(n.channels).toEqual(['telegram']);
+    expect(await n.notify('hello')).toEqual({ telegram: true });
+    const [url, opts] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.telegram.org/botT0K/sendMessage');
+    expect(JSON.parse(opts.body)).toMatchObject({ chat_id: '42', text: 'hello' });
+  });
+
+  test('whatsapp via callmebot', async () => {
+    const fetchImpl = ok();
+    const n = createNotifier({ config: { whatsappPhone: '+911234567890', whatsappApiKey: 'K' }, logger, fetchImpl });
+    await n.notify('a & b');
+    const url = new URL(fetchImpl.mock.calls[0][0]);
+    expect(url.host).toBe('api.callmebot.com');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ phone: '+911234567890', text: 'a & b', apikey: 'K' });
+  });
+
+  test('slack/discord webhook', async () => {
+    const fetchImpl = ok();
+    const n = createNotifier({ config: { alertWebhookUrl: 'http://hook' }, logger, fetchImpl });
+    await n.notify('x');
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ text: 'x', content: 'x' });
+  });
+
+  test('one failing channel does not block the others', async () => {
+    const fetchImpl = jest.fn(async (url) => (String(url).includes('telegram') ? { ok: false, status: 401 } : { ok: true }));
+    const n = createNotifier({
+      config: { telegramBotToken: 't', telegramChatId: '1', alertWebhookUrl: 'http://hook' }, logger, fetchImpl,
+    });
+    expect(await n.notify('x')).toEqual({ webhook: true, telegram: false });
+  });
+
+  test('network error is caught', async () => {
+    const n = createNotifier({
+      config: { alertWebhookUrl: 'http://hook' }, logger, fetchImpl: async () => { throw new Error('ECONNRESET'); },
+    });
+    expect(await n.notify('x')).toEqual({ webhook: false });
+  });
+});
+
+describe('formatAlertmanager', () => {
+  test('firing and resolved alerts', () => {
+    const text = formatAlertmanager({
+      status: 'firing',
+      alerts: [
+        { status: 'firing', labels: { alertname: 'TargetDown', severity: 'critical' }, annotations: { summary: 'api is down', description: 'http://api failing' } },
+        { status: 'resolved', labels: { alertname: 'TargetSlow' }, annotations: {} },
+      ],
+    });
+    expect(text).toContain('🔴 FIRING: api is down');
+    expect(text).toContain('http://api failing');
+    expect(text).toContain('✅ RESOLVED: TargetSlow');
+  });
+
+  test('truncates long batches', () => {
+    const alerts = Array.from({ length: 12 }, (_, i) => ({ status: 'firing', labels: { alertname: `A${i}` } }));
+    expect(formatAlertmanager({ status: 'firing', alerts })).toContain('…and 2 more');
   });
 });
