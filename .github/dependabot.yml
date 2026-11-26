@@ -9,3 +9,6 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+  - package-ecosystem: terraform
+    directory: /infra/terraform/eks
+    schedule: { interval: weekly }

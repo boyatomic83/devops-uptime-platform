@@ -1,0 +1,7 @@
+region             = "us-east-1"
+name               = "uptime-platform"
+node_capacity_type = "SPOT"
+node_desired_size  = 2
+tags = {
+  Owner = "you"
+}

@@ -3,33 +3,23 @@
 A self-hosted **uptime monitor** built with **Express**, packaged with a full DevOps toolchain: containers, CI/CD, security scanning, Kubernetes, GitOps and observability.
 
 ```
-            ┌──────────────── GitHub Actions ───────────────────┐
-  push ───▶ │ lint/test → helm lint → docker build → Trivy scan │──▶ GHCR image
-            │                         └──▶ kind cluster e2e     │
-            └───────────────────────────────────────────────────┘
+                 ┌──────────────────────── GitHub Actions ─────────────────────────┐
+   git push ───▶ │ lint · unit + Postgres tests · helm lint · terraform validate   │
+                 │ IaC scan ─▶ build ─▶ Trivy ─▶ push + SBOM + provenance ─▶ Cosign │──▶ ghcr.io (signed)
+                 │ kind e2e: 2 replicas, leader failover · Kyverno policy tests     │
+                 └──────────────────────────────────────────────────────────────────┘
                                                    │
-                       Argo CD (GitOps) ◀──────────┘  syncs deploy/helm
-                                │
-                    ┌───────────▼───────────┐   scrape   ┌────────────┐   ┌─────────┐
-                    │ uptime-monitor (K8s)  │ ◀───────── │ Prometheus │──▶│ Grafana │
-                    │  checks URLs, alerts  │  /metrics  └────────────┘   └─────────┘
-                    └───────────┬───────────┘
-                                ▼
-                     Slack / Discord webhook
+        Terraform (VPC + EKS) ──▶ Argo CD syncs deploy/helm ──▶ Kyverno admits only signed images
+                                                   │
+       ┌───────────────────────────────────────────▼────────────────────────────┐
+       │  uptime-monitor (N replicas) ── leader election ──▶ Postgres           │
+       │   only the leader runs checks; any replica serves the API              │
+       └──────┬───────────────────────────┬──────────────────────────┬──────────┘
+         /metrics                    JSON logs                  webhook on change
+              ▼                           ▼                          ▼
+        Prometheus ──▶ Alertmanager   Alloy ──▶ Loki           Slack / Discord
+              └──────────▶ Grafana ◀──────────┘
 ```
-
-## Features
-
-| Area | What's included |
-|---|---|
-| **App** | Express REST API + live status page, configurable HTTP checks, uptime %, latency history |
-| **Alerting** | Slack/Discord webhook on state change; Prometheus alert rules |
-| **Observability** | Prometheus metrics (`/metrics`), structured JSON logs, provisioned Grafana dashboard |
-| **Containers** | Multi-stage, non-root Docker image with healthcheck and graceful shutdown |
-| **CI/CD** | GitHub Actions: lint, test + coverage, Helm lint, build, Trivy scan (SARIF), push to GHCR, kind e2e |
-| **Kubernetes** | Helm chart with probes, resource limits, hardened securityContext, NetworkPolicy, optional Ingress/ServiceMonitor |
-| **GitOps** | Argo CD `Application` with automated sync & self-heal |
-| **Dev env** | GitHub Codespaces devcontainer with Docker, kubectl, Helm and kind preinstalled |
 
 ## Quick start (GitHub Codespaces — nothing installed locally)
 
@@ -47,6 +37,11 @@ Open the forwarded ports from the **PORTS** tab:
 | **3000** | Status page: add a URL and watch it get checked |
 | **3001** | Grafana: opens straight on the **Uptime Overview** dashboard (login `admin`/`admin` to edit) |
 | **9090** | Prometheus: try the query `uptime_monitor_up`, or see **Status → Targets** and **Alerts** |
+| **9093** | Alertmanager: alerts routed from Prometheus (e.g. `TargetDown` for the "broken" monitor after 1 min) |
+
+Logs: in Grafana open **Explore → Loki** and run `{service="app"} | json`.
+
+To get alert notifications, add a Discord/Slack receiver in `monitoring/alertmanager/alertmanager.yml` and run `make reload`.
 
 ### Run on Kubernetes (kind inside the Codespace)
 
@@ -55,6 +50,33 @@ make kind-up
 make kind-deploy
 kubectl -n uptime port-forward svc/uptime-uptime-monitor 8080:80
 ```
+
+### Scaling and leader election
+
+With a database, run as many replicas as you like; exactly one is the leader and runs the checks:
+
+```bash
+kubectl -n uptime scale deploy/uptime-uptime-monitor --replicas=3
+for p in $(kubectl -n uptime get pods -l app.kubernetes.io/name=uptime-monitor -o name); do
+  kubectl -n uptime exec $p -- wget -qO- localhost:3000/api/whoami; echo
+done
+kubectl -n uptime delete pod <leader-pod>   # another replica takes over within ~5s
+```
+
+### Supply-chain checks
+
+```bash
+cosign verify ghcr.io/boyatomic83/uptime-monitor:latest \
+  --certificate-identity https://github.com/boyatomic83/devops-uptime-platform/.github/workflows/ci.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+docker buildx imagetools inspect ghcr.io/boyatomic83/uptime-monitor:latest --format '{{ json .SBOM }}' | head
+```
+
+Admission policies (needs Kyverno installed): `kubectl apply -f deploy/policies/`
+
+### Cloud: AWS EKS with Terraform
+
+See [`infra/terraform/eks`](infra/terraform/eks/README.md). It creates a real cluster and **costs money**, so CI only validates it.
 
 ### GitOps with Argo CD
 
@@ -75,12 +97,15 @@ kubectl apply -f deploy/argocd/application.yaml
 | `CHECK_TIMEOUT_MS` | `5000` | Per-check timeout |
 | `ALERT_WEBHOOK_URL` | – | Slack/Discord incoming webhook |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
+| `DATABASE_URL` | – | Postgres connection string; without it monitors are kept in memory (single replica only) |
+| `SYNC_INTERVAL_SEC` | `10` | How often the leader re-reads monitors created via other replicas |
 
 ## API
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/healthz`, `/readyz` | Liveness / readiness |
+| `GET` | `/healthz`, `/readyz` | Liveness / readiness (readiness also checks the database) |
+| `GET` | `/api/whoami` | Which pod answered and whether it is the leader |
 | `GET` | `/metrics` | Prometheus metrics |
 | `GET` | `/api/monitors` | List monitors |
 | `POST` | `/api/monitors` | Create `{ "name", "url", "intervalSec"? }` |
@@ -97,17 +122,22 @@ curl -X POST localhost:3000/api/monitors -H 'content-type: application/json' \
 
 ```
 app/                     Express service (src/, tests, Dockerfile)
-deploy/helm/             Helm chart
+deploy/helm/             Helm chart (app, optional Postgres, HPA, PDB, NetworkPolicies)
 deploy/argocd/           Argo CD Application
-monitoring/              Prometheus config + alert rules, Grafana provisioning & dashboard
+deploy/policies/         Kyverno admission policies
+infra/terraform/eks/     AWS VPC + EKS + Argo CD + Kyverno
+monitoring/              Prometheus, Alertmanager, Loki, Alloy, Grafana provisioning & dashboard
 .github/workflows/       CI/CD pipeline
 .devcontainer/           GitHub Codespaces config
 ```
 
 ## Roadmap
 
-- [ ] Terraform for a managed cluster (EKS/GKE) + remote state
-- [ ] Persist monitors in Postgres/Redis (enables >1 replica + HPA)
-- [ ] Loki for logs, Alertmanager routing
-- [ ] Cosign image signing + Kyverno admission policy
+- [x] Postgres persistence, leader election, HPA/PDB
+- [x] Alertmanager, Loki + Alloy logs
+- [x] SBOM, provenance, Cosign signing, Kyverno policies
+- [x] Terraform for EKS
 - [ ] Per-PR preview environments
+- [ ] OpenTelemetry tracing (Tempo)
+- [ ] SLOs with error budgets and burn-rate alerts
+- [ ] Chaos experiments (pod/DB failure) with Chaos Mesh
