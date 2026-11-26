@@ -1,0 +1,34 @@
+# Only images signed by THIS repo's CI workflow on main may run.
+# Signing happens keylessly in .github/workflows/ci.yml (Cosign + GitHub OIDC);
+# Kyverno checks the Sigstore certificate identity at admission time and
+# pins the pod to the verified digest.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-uptime-image-signature
+  annotations:
+    policies.kyverno.io/title: Verify uptime-monitor image signature
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Enforce
+  background: false
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: require-keyless-signature-from-ci
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/boyatomic83/uptime-monitor*"
+          mutateDigest: true
+          verifyDigest: true
+          required: true
+          attestors:
+            - entries:
+                - keyless:
+                    subject: "https://github.com/boyatomic83/devops-uptime-platform/.github/workflows/ci.yml@refs/heads/main"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev

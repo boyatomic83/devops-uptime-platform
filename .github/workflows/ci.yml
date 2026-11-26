@@ -66,6 +66,9 @@ jobs:
       contents: read
       packages: write
       security-events: write
+      id-token: write   # keyless Cosign signing via GitHub OIDC
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -109,7 +112,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Push image
+      - name: Push image (with SBOM + SLSA provenance attestations)
+        id: push
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
@@ -118,6 +122,22 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
+          sbom: true
+          provenance: mode=max
+      - name: Install Cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        with:
+          cosign-release: v2.6.5
+      - name: Sign image (keyless, GitHub OIDC -> Sigstore)
+        if: github.event_name != 'pull_request'
+        run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
+      - name: Verify signature
+        if: github.event_name != 'pull_request'
+        run: |
+          cosign verify "${IMAGE}@${{ steps.push.outputs.digest }}" \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/ci.yml@${{ github.ref }}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com | jq '.[0].optional | {Issuer, Subject}'
 
   e2e:
     name: Deploy to kind & smoke test
@@ -171,3 +191,56 @@ jobs:
       - name: Debug on failure
         if: failure()
         run: kubectl -n uptime get all && kubectl -n uptime describe pods && kubectl -n uptime logs -l app.kubernetes.io/name=uptime-monitor --tail=100; kubectl -n uptime logs statefulset/uptime-uptime-monitor-postgresql --tail=50
+
+  policy:
+    name: Kyverno admission policies (signed images only)
+    needs: [image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with: { cluster_name: policy }
+      - name: Install Kyverno
+        run: |
+          helm repo add kyverno https://kyverno.github.io/kyverno/
+          helm install kyverno kyverno/kyverno -n kyverno --create-namespace --wait --timeout 300s
+      - name: Apply policies
+        run: |
+          kubectl create namespace uptime
+          kubectl apply -f deploy/policies/
+          kubectl wait --for=condition=Ready clusterpolicy --all --timeout=120s
+      - name: Signed, hardened image is admitted
+        run: |
+          helm install uptime deploy/helm/uptime-monitor -n uptime \
+            --set image.tag=${GITHUB_SHA::7} --wait --timeout 300s
+          kubectl -n uptime get pods -l app.kubernetes.io/name=uptime-monitor \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.spec.containers[0].image}{"\n"}{end}'
+      - name: Policy violations are rejected
+        run: |
+          # expect_reject <pattern-in-error> <kubectl args...>
+          expect_reject() {
+            pattern=$1; shift
+            if out=$(kubectl -n uptime "$@" --dry-run=server 2>&1); then
+              echo "::error::expected rejection: $*"; echo "$out"; exit 1
+            fi
+            echo "$out" | grep -qiE "$pattern" || { echo "::error::rejected for the wrong reason"; echo "$out"; exit 1; }
+            echo "rejected as expected ($pattern)"
+          }
+          SEC='"securityContext":{"runAsNonRoot":true}'
+          LIM='"resources":{"limits":{"cpu":"100m","memory":"64Mi"}}'
+          # unsigned image from our registry (otherwise compliant pod)
+          expect_reject 'verify-uptime-image-signature' run unsigned --image=ghcr.io/${{ github.repository_owner }}/uptime-monitor:unsigned \
+            --overrides="{\"spec\":{$SEC,\"containers\":[{\"name\":\"unsigned\",\"image\":\"ghcr.io/${{ github.repository_owner }}/uptime-monitor:unsigned\",$LIM}]}}"
+          # privileged container
+          expect_reject 'disallow-privileged' run priv --image=busybox \
+            --overrides="{\"spec\":{$SEC,\"containers\":[{\"name\":\"priv\",\"image\":\"busybox\",\"securityContext\":{\"privileged\":true},$LIM}]}}"
+          # running as root allowed by default -> rejected
+          expect_reject 'require-run-as-non-root' run root --image=busybox \
+            --overrides="{\"spec\":{\"containers\":[{\"name\":\"root\",\"image\":\"busybox\",$LIM}]}}"
+          # no resource limits
+          expect_reject 'require-resource-limits' run nolimits --image=busybox \
+            --overrides="{\"spec\":{$SEC,\"containers\":[{\"name\":\"nolimits\",\"image\":\"busybox\"}]}}"
+      - name: Debug on failure
+        if: failure()
+        run: kubectl get clusterpolicy -o wide; kubectl -n uptime get events --sort-by=.lastTimestamp | tail -30; kubectl get policyreport -A
