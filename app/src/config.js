@@ -26,6 +26,8 @@ function loadConfig(env = process.env) {
     alertWebhookUrl: env.ALERT_WEBHOOK_URL || '',
     monitors: parseMonitors(env.MONITORS),
     logLevel: env.LOG_LEVEL || 'info',
+    databaseUrl: env.DATABASE_URL || '',
+    syncIntervalSec: Number(env.SYNC_INTERVAL_SEC || 10),
   };
 }
 

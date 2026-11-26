@@ -17,6 +17,18 @@ jobs:
     name: Lint & test
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: app } }
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: uptime_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/uptime_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,7 +49,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - run: helm lint deploy/helm/uptime-monitor
-      - run: helm template test deploy/helm/uptime-monitor --set ingress.enabled=true --set serviceMonitor.enabled=true > /dev/null
+      - name: Render chart in each supported mode
+        run: |
+          C=deploy/helm/uptime-monitor
+          helm template t $C --set ingress.enabled=true --set serviceMonitor.enabled=true > /dev/null
+          helm template t $C --set postgresql.enabled=false --set replicaCount=1 > /dev/null
+          helm template t $C --set database.existingSecret=db --set autoscaling.enabled=true > /dev/null
+          # guard: multiple replicas without a database must be rejected
+          ! helm template t $C --set postgresql.enabled=false 2>/dev/null
 
   image:
     name: Build, scan & push image
@@ -112,20 +131,43 @@ jobs:
         run: |
           docker build -t uptime-monitor:e2e app
           kind load docker-image uptime-monitor:e2e --name ci
-      - name: Helm install
+      - name: Helm install (2 replicas + Postgres)
         run: |
           helm install uptime deploy/helm/uptime-monitor \
             --namespace uptime --create-namespace \
             --set image.repository=uptime-monitor --set image.tag=e2e --set image.pullPolicy=Never \
             --set config.monitors="self=http://127.0.0.1:3000/healthz" \
-            --wait --timeout 120s
+            --wait --timeout 300s
+          kubectl -n uptime get pods -o wide
       - name: Smoke test
         run: |
           kubectl -n uptime port-forward svc/uptime-uptime-monitor 8080:80 &
           sleep 5
-          curl -fsS localhost:8080/healthz
+          curl -fsS localhost:8080/readyz | jq -e '.store == "postgres"'
+          curl -fsS -X POST localhost:8080/api/monitors -H 'content-type: application/json' \
+            -d '{"name":"service-dns","url":"http://uptime-uptime-monitor.uptime.svc/healthz","intervalSec":5}' | jq .
           curl -fsS localhost:8080/api/monitors | jq .
-          curl -fsS localhost:8080/metrics | grep uptime_monitor_up
+          curl -fsS localhost:8080/metrics | grep uptime_scheduler_leader
+      - name: Exactly one leader, and failover works
+        run: |
+          leaders() {
+            for p in $(kubectl -n uptime get pods -l app.kubernetes.io/name=uptime-monitor -o name); do
+              kubectl -n uptime exec "$p" -- wget -qO- localhost:3000/api/whoami
+              echo
+            done | jq -s '[.[] | select(.leader)] | map(.pod)'
+          }
+          L=$(leaders); echo "leaders: $L"
+          test "$(echo "$L" | jq length)" = 1
+          OLD=$(echo "$L" | jq -r '.[0]')
+          kubectl -n uptime delete pod "$OLD" --wait=false
+          for i in $(seq 1 30); do
+            L=$(leaders 2>/dev/null || echo '[]')
+            if [ "$(echo "$L" | jq length)" = 1 ] && [ "$(echo "$L" | jq -r '.[0]')" != "$OLD" ]; then
+              echo "new leader: $L"; exit 0
+            fi
+            sleep 2
+          done
+          echo "failover did not happen"; exit 1
       - name: Debug on failure
         if: failure()
-        run: kubectl -n uptime get all && kubectl -n uptime describe pods && kubectl -n uptime logs -l app.kubernetes.io/name=uptime-monitor
+        run: kubectl -n uptime get all && kubectl -n uptime describe pods && kubectl -n uptime logs -l app.kubernetes.io/name=uptime-monitor --tail=100; kubectl -n uptime logs statefulset/uptime-uptime-monitor-postgresql --tail=50

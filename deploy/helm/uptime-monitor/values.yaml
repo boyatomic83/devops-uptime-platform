@@ -1,4 +1,6 @@
-replicaCount: 1  # monitors are kept in memory; scale >1 only with an external store
+# >1 replica requires a database (postgresql.enabled or database.existingSecret).
+# Replicas elect a leader via a Postgres advisory lock; only the leader runs checks.
+replicaCount: 2
 
 image:
   repository: ghcr.io/boyatomic83/uptime-monitor
@@ -13,6 +15,36 @@ config:
 
 # Name of an existing Secret with key ALERT_WEBHOOK_URL (optional)
 alertWebhookSecret: ""
+
+# External Postgres: name of an existing Secret with key DATABASE_URL.
+# Takes precedence over the bundled postgresql below.
+database:
+  existingSecret: ""
+
+# Bundled single-instance Postgres (good for demos/kind; use a managed DB in prod).
+postgresql:
+  enabled: true
+  image: postgres:17-alpine
+  database: uptime
+  username: uptime
+  # Leave empty to auto-generate (kept across upgrades via lookup).
+  # With Argo CD (no lookup), set this or use database.existingSecret.
+  password: ""
+  storage: 1Gi
+  storageClass: ""
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
 
 service:
   type: ClusterIP

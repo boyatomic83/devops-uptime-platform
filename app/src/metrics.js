@@ -33,7 +33,13 @@ function createMetrics() {
     registers: [register],
   });
 
-  return { register, monitorUp, checkDuration, checksTotal, httpRequests };
+  const isLeader = new client.Gauge({
+    name: 'uptime_scheduler_leader',
+    help: '1 if this replica is the elected leader running checks',
+    registers: [register],
+  });
+
+  return { register, isLeader, monitorUp, checkDuration, checksTotal, httpRequests };
 }
 
 module.exports = { createMetrics };

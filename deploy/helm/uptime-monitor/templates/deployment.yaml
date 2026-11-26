@@ -3,8 +3,13 @@ kind: Deployment
 metadata:
   name: {{ include "uptime.fullname" . }}
   labels: {{- include "uptime.labels" . | nindent 4 }}
+{{- if and (not (include "uptime.dbEnabled" .)) (or (gt (int .Values.replicaCount) 1) .Values.autoscaling.enabled) }}
+{{- fail "replicaCount > 1 / autoscaling needs a database: set postgresql.enabled=true or database.existingSecret" }}
+{{- end }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
@@ -36,6 +41,14 @@ spec:
             - secretRef:
                 name: {{ .Values.alertWebhookSecret }}
           {{- end }}
+          {{- if include "uptime.dbEnabled" . }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "uptime.dbSecretName" . }}
+                  key: DATABASE_URL
+          {{- end }}
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 5
@@ -50,6 +63,12 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "uptime.selectorLabels" . | nindent 14 }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}

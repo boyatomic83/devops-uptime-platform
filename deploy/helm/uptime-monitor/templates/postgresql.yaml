@@ -1,0 +1,123 @@
+{{- if and .Values.postgresql.enabled (not .Values.database.existingSecret) }}
+{{- $secretName := include "uptime.dbSecretName" . }}
+{{- $pw := .Values.postgresql.password }}
+{{- if not $pw }}
+  {{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName }}
+  {{- if and $existing $existing.data }}
+    {{- $pw = index $existing.data "POSTGRES_PASSWORD" | b64dec }}
+  {{- else }}
+    {{- $pw = randAlphaNum 24 }}
+  {{- end }}
+{{- end }}
+{{- $host := include "uptime.pgName" . }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  labels: {{- include "uptime.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  POSTGRES_USER: {{ .Values.postgresql.username | quote }}
+  POSTGRES_PASSWORD: {{ $pw | quote }}
+  POSTGRES_DB: {{ .Values.postgresql.database | quote }}
+  DATABASE_URL: {{ printf "postgres://%s:%s@%s:5432/%s" .Values.postgresql.username $pw $host .Values.postgresql.database | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $host }}
+  labels: {{- include "uptime.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "uptime.pgSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $host }}
+  labels: {{- include "uptime.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ $host }}
+  replicas: 1
+  selector:
+    matchLabels: {{- include "uptime.pgSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "uptime.pgSelectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/secret: {{ $pw | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70     # postgres user in the alpine image
+        fsGroup: 70
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: postgres
+          image: {{ .Values.postgresql.image }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: {{ $secretName }}
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources: {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+      volumes:
+        - name: run
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.postgresql.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.storage }}
+---
+{{- if .Values.networkPolicy.enabled }}
+# Only the app pods may talk to Postgres
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $host }}
+  labels: {{- include "uptime.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "uptime.pgSelectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {{- include "uptime.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
+{{- end }}
