@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- deps: production dependencies only ----
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 # Optional CA secret lets builds work behind TLS-intercepting proxies; no-op otherwise
@@ -10,7 +10,7 @@ RUN --mount=type=secret,id=npm_ca,required=false \
     npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 # ---- runtime: minimal, non-root ----
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 ENV NODE_ENV=production PORT=3000
 WORKDIR /app
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
